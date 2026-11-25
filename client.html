@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Синхронный просмотр видео</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+        video { width: 100%; background: #000; border-radius: 8px; }
+        .controls { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+        button { padding: 8px 16px; cursor: pointer; }
+        #status { margin-left: auto; font-size: 0.9em; color: #666; }
+        .room-input { margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+
+<h2>🎬 Синхронный просмотр</h2>
+
+<div class="room-input">
+    <label>Комната: <input type="text" id="roomInput" value="test-room" placeholder="ID комнаты"></label>
+    <button onclick="connect()">Подключиться</button>
+</div>
+
+<video id="video" controls preload="auto">
+    <!-- Замените src на ссылку на ваше видео -->
+    <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
+</video>
+
+<div class="controls">
+    <button id="playBtn">▶ Play</button>
+    <button id="pauseBtn">⏸ Pause</button>
+    <button id="seekBtn">⏩ +10s</button>
+    <span id="status">Не подключено</span>
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const statusEl = document.getElementById('status');
+    const roomInput = document.getElementById('roomInput');
+
+    let ws = null;
+    let mySenderId = null;
+    let ignoreEvents = false; // Флаг, чтобы не зацикливать события
+
+    // --- Подключение к WebSocket ---
+    function connect() {
+        if (ws) ws.close();
+
+        const room = roomInput.value.trim() || 'default';
+        const wsUrl = `ws://192.168.100.7:8765/${room}`;
+        statusEl.textContent = `Подключение к ${room}...`;
+
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            statusEl.textContent = `✅ В комнате: ${room}`;
+            console.log('WebSocket подключён');
+        };
+
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            console.log('Получено:', msg);
+
+            if (msg.type === 'init') {
+                // Сервер прислал текущее состояние комнаты
+                const { position, is_playing } = msg.data;
+                ignoreEvents = true;
+                video.currentTime = position;
+                if (is_playing) {
+                    video.play().catch(e => console.log('Autoplay blocked:', e));
+                } else {
+                    video.pause();
+                }
+                setTimeout(() => { ignoreEvents = false; }, 200);
+            }
+            else if (msg.type === 'play') {
+                if (msg.sender === mySenderId) return; // Игнорируем своё же событие
+                ignoreEvents = true;
+                video.currentTime = msg.data.position;
+                video.play().catch(e => console.log('Remote play blocked:', e));
+                setTimeout(() => { ignoreEvents = false; }, 200);
+            }
+            else if (msg.type === 'pause') {
+                if (msg.sender === mySenderId) return;
+                ignoreEvents = true;
+                video.currentTime = msg.data.position;
+                video.pause();
+                setTimeout(() => { ignoreEvents = false; }, 200);
+            }
+            else if (msg.type === 'seek') {
+                if (msg.sender === mySenderId) return;
+                ignoreEvents = true;
+                video.currentTime = msg.data.position;
+                setTimeout(() => { ignoreEvents = false; }, 200);
+            }
+        };
+
+        ws.onclose = () => {
+            statusEl.textContent = '❌ Отключено';
+        };
+    }
+
+    // --- Отправка событий на сервер ---
+    function sendEvent(type, position) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (ignoreEvents) return;
+
+        ws.send(JSON.stringify({
+            type: type,
+            data: { position: position }
+        }));
+    }
+
+    // --- Обработчики кнопок ---
+    document.getElementById('playBtn').onclick = () => {
+        video.play();
+        sendEvent('play', video.currentTime);
+    };
+
+    document.getElementById('pauseBtn').onclick = () => {
+        video.pause();
+        sendEvent('pause', video.currentTime);
+    };
+
+    document.getElementById('seekBtn').onclick = () => {
+        const newTime = video.currentTime + 10;
+        video.currentTime = newTime;
+        sendEvent('seek', newTime);
+    };
+
+    // --- Отслеживание ручных действий пользователя с плеером ---
+    // (перемотка через встроенные контролы видео)
+    video.addEventListener('seeked', () => {
+        if (!ignoreEvents) {
+            sendEvent('seek', video.currentTime);
+        }
+    });
+
+    video.addEventListener('play', () => {
+        if (!ignoreEvents) {
+            sendEvent('play', video.currentTime);
+        }
+    });
+
+    video.addEventListener('pause', () => {
+        if (!ignoreEvents) {
+            sendEvent('pause', video.currentTime);
+        }
+    });
+
+</script>
+
+</body>
+</html>
